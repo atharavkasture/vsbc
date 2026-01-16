@@ -16,9 +16,9 @@ const SYSTEM_GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 // ---------------------------------------------------------
 // This stays on the server. The Frontend NEVER sees this.
 const MASTER_CONFIG = {
-    host: '136.112.86.223', 
+    host: '136.112.86.XXX', 
     user: 'root',          // Your GCP Root User
-    password: 'Ayush@2005', // Your GCP Root Password
+    password: 'Ayush@XXXX', // Your GCP Root Password
     ssl: { rejectUnauthorized: false } // Required for Cloud SQL
 };
 
@@ -198,4 +198,5 @@ app.post('/api/generate-query', async (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`🚀 Secure Multi-User SQL Backend running on http://localhost:${PORT}`);
+
 });
