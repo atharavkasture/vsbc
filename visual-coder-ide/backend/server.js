@@ -18,7 +18,7 @@ app.use(express.json());
 // ---------------------------------------------------------
 // 1. MONGODB CONNECTION
 // ---------------------------------------------------------
-const MONGO_URI = "mongodb+srv://admin:GErVb1Y01VksKtlL@messages.k2ubw99.mongodb.net/MMCOE?appName=Messages";
+const MONGO_URI = "MONGO_URL";
 
 mongoose.connect(MONGO_URI)
   .then(() => console.log('✅ MongoDB Atlas Connected'))
