@@ -10,7 +10,8 @@ const bcrypt = require('bcryptjs');
 const apiRoutes = require('./routes/api'); 
 
 const app = express();
-const PORT = 3001;
+// Use Environment Variable for Port
+const PORT = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
@@ -18,7 +19,13 @@ app.use(express.json());
 // ---------------------------------------------------------
 // 1. MONGODB CONNECTION
 // ---------------------------------------------------------
-const MONGO_URI = "MONGO_URL";
+// Use Environment Variable for Mongo URI
+const MONGO_URI = process.env.MONGO_URI;
+
+if (!MONGO_URI) {
+    console.error("❌ FATAL ERROR: MONGO_URI is missing in .env file.");
+    process.exit(1);
+}
 
 mongoose.connect(MONGO_URI)
   .then(() => console.log('✅ MongoDB Atlas Connected'))
@@ -59,7 +66,9 @@ const verifyToken = (req, res, next) => {
     const token = req.headers['authorization'];
     if (!token) return res.status(403).json({ error: "No token provided" });
     try {
-        const decoded = jwt.verify(token, 'secret123');
+        // Use Environment Variable for Secret
+        const secret = process.env.JWT_SECRET || 'secret123';
+        const decoded = jwt.verify(token, secret);
         req.userId = decoded.id;
         next();
     } catch (err) {
@@ -89,13 +98,15 @@ app.post('/api/login', async (req, res) => {
         if (!user) return res.status(400).json({ error: "User not found" });
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) return res.status(400).json({ error: "Invalid password" });
-        const token = jwt.sign({ id: user._id }, 'secret123', { expiresIn: '7d' });
+        
+        const secret = process.env.JWT_SECRET || 'secret123';
+        const token = jwt.sign({ id: user._id }, secret, { expiresIn: '7d' });
         res.json({ token, email: user.email });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ---------------------------------------------------------
-// 5. PROJECT ROUTES (UPDATED LOGIC)
+// 5. PROJECT ROUTES (Cloud Save Logic)
 // ---------------------------------------------------------
 app.get('/api/graphs', verifyToken, async (req, res) => {
     try {
@@ -116,7 +127,7 @@ app.post('/api/graphs', verifyToken, async (req, res) => {
     try {
         const { id, name, nodes, edges } = req.body;
 
-        // LOGIC 1: If ID provided, update specific project (Rename or Save)
+        // LOGIC 1: If ID provided, update specific project
         if (id) {
             const updated = await Graph.findOneAndUpdate(
                 { _id: id, userId: req.userId }, 
@@ -126,11 +137,11 @@ app.post('/api/graphs', verifyToken, async (req, res) => {
             if (updated) return res.json({ success: true, id: updated._id });
         }
 
-        // LOGIC 2: If no ID (or ID not found), Check by NAME to prevent duplicates
+        // LOGIC 2: Check by NAME to prevent duplicates
         const existingByName = await Graph.findOne({ userId: req.userId, name: name });
 
         if (existingByName) {
-            // Update the existing project with the same name
+            // Update existing project with same name
             existingByName.nodes = nodes;
             existingByName.edges = edges;
             existingByName.updatedAt = Date.now();
@@ -138,7 +149,7 @@ app.post('/api/graphs', verifyToken, async (req, res) => {
             return res.json({ success: true, id: existingByName._id });
         }
 
-        // LOGIC 3: Create NEW project if Name doesn't exist
+        // LOGIC 3: Create NEW project
         const newGraph = new Graph({ userId: req.userId, name, nodes, edges });
         await newGraph.save();
         res.json({ success: true, id: newGraph._id });
@@ -154,7 +165,7 @@ app.delete('/api/graphs/:id', verifyToken, async (req, res) => {
 });
 
 // ---------------------------------------------------------
-// 6. FUNCTION ROUTES (Already has duplicate check logic)
+// 6. FUNCTION ROUTES (Cloud Save Logic)
 // ---------------------------------------------------------
 app.get('/api/functions', verifyToken, async (req, res) => {
     try {
@@ -175,7 +186,7 @@ app.post('/api/functions', verifyToken, async (req, res) => {
     try {
         const { name, description, functionData } = req.body;
         
-        // Check if function with name exists, update if so
+        // Upsert Logic: Check if function with name exists
         const existing = await SavedFunction.findOne({ userId: req.userId, name });
         
         if (existing) {
@@ -198,7 +209,7 @@ app.delete('/api/functions/:id', verifyToken, async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// --- LEGACY ROUTES ---
+// --- LEGACY ROUTES (Local Files) ---
 const PROJECTS_DIR = path.join(__dirname, 'saved_projects');
 const FUNCTIONS_DIR = path.join(__dirname, 'saved_functions');
 if (!fs.existsSync(PROJECTS_DIR)) fs.mkdirSync(PROJECTS_DIR);
