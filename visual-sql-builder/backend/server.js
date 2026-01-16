@@ -6,19 +6,19 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const axios = require('axios');
 
 const app = express();
-const PORT = 3002;
+const PORT = process.env.PORT || 3002;
 
-// System API Key from .env (For AI features)
+// System API Key from .env
 const SYSTEM_GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 // ---------------------------------------------------------
 // 🔒 SECURITY: MASTER CREDENTIALS (BACKEND ONLY)
 // ---------------------------------------------------------
-// This stays on the server. The Frontend NEVER sees this.
+// Now loads from .env for Docker compatibility
 const MASTER_CONFIG = {
-    host: '136.112.86.XXX', 
-    user: 'root',          // Your GCP Root User
-    password: 'Ayush@XXXX', // Your GCP Root Password
+    host: process.env.DB_HOST, 
+    user: process.env.DB_USER,          
+    password: process.env.DB_PASS, 
     ssl: { rejectUnauthorized: false } // Required for Cloud SQL
 };
 
@@ -32,7 +32,6 @@ app.use(cors({
             callback(new Error('Not allowed by CORS'));
         }
     },
-    // Allow custom headers for passing DB credentials safely
     allowedHeaders: ['Content-Type', 'x-db-host', 'x-db-user', 'x-db-pass', 'x-db-name', 'x-db-port']
 }));
 
@@ -41,7 +40,6 @@ app.use(express.json());
 // ---------------------------------------------------------
 // 🔌 HELPER: User Dynamic Connection
 // ---------------------------------------------------------
-// This connects using the USER'S credentials from the Frontend.
 async function getUserConnection(req) {
     const host = req.headers['x-db-host'];
     const user = req.headers['x-db-user'];
@@ -65,14 +63,14 @@ async function getUserConnection(req) {
 app.post('/api/create-workspace', async (req, res) => {
     const { newDbName, newPassword } = req.body;
     
-    // 1. Sanitize Input (Security: Prevent SQL Injection)
+    // 1. Sanitize Input
     const safeName = newDbName.replace(/[^a-zA-Z0-9_]/g, '');
-    const dbName = `${safeName}`;    // e.g., viz_shop1
-    const userName = `${safeName}`;    // e.g., u_shop1
+    const dbName = `${safeName}`;    
+    const userName = `${safeName}`; 
 
     let masterConn;
     try {
-        // 2. Connect as ADMIN (Securely on server)
+        // 2. Connect as ADMIN (Using env vars)
         masterConn = await mysql.createConnection(MASTER_CONFIG);
 
         // 3. Create Database
@@ -81,8 +79,7 @@ app.post('/api/create-workspace', async (req, res) => {
         // 4. Create User
         await masterConn.query(`CREATE USER IF NOT EXISTS '${userName}'@'%' IDENTIFIED BY '${newPassword}'`);
         
-        // 5. GRANT PERMISSIONS (Crucial Security Step)
-        // Give this user access ONLY to their specific database.
+        // 5. GRANT PERMISSIONS
         await masterConn.query(`GRANT ALL PRIVILEGES ON ${dbName}.* TO '${userName}'@'%'`);
         
         // 6. Apply Changes
@@ -90,7 +87,6 @@ app.post('/api/create-workspace', async (req, res) => {
 
         console.log(`✅ Created Workspace: DB=${dbName}, User=${userName}`);
 
-        // 7. Return the NEW credentials to the user so they can log in
         res.json({ 
             success: true, 
             message: 'Workspace created successfully!',
@@ -179,7 +175,6 @@ app.post('/api/generate-query', async (req, res) => {
     const fullPrompt = `${systemInstruction}\n\nSchema:\n${schemaString}\n\nUser Request: "${userInput}"`;
 
     try {
-        // Defaulting to System Key logic for brevity, you can keep your local/custom logic if you want
         if (!SYSTEM_GEMINI_API_KEY) throw new Error("Server API Key missing");
         const genAI = new GoogleGenerativeAI(SYSTEM_GEMINI_API_KEY);
         const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
@@ -198,5 +193,4 @@ app.post('/api/generate-query', async (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`🚀 Secure Multi-User SQL Backend running on http://localhost:${PORT}`);
-
 });
