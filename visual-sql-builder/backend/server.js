@@ -19,8 +19,15 @@ const MASTER_CONFIG = {
     host: process.env.DB_HOST, 
     user: process.env.DB_USER,          
     password: process.env.DB_PASS, 
-    ssl: { rejectUnauthorized: false } // Required for Cloud SQL
+    ssl: { rejectUnauthorized: false }, // Required for Cloud SQL
+    // 👇 POOLING SETTINGS ADDED
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0
 };
+
+// Create a persistent Master Pool for admin tasks
+const masterPool = mysql.createPool(MASTER_CONFIG);
 
 // --- CORS Configuration ---
 const allowedOrigins = ['http://localhost:5173', 'http://localhost:3000'];
@@ -38,8 +45,10 @@ app.use(cors({
 app.use(express.json());
 
 // ---------------------------------------------------------
-// 🔌 HELPER: User Dynamic Connection
+// 🔌 HELPER: User Dynamic Connection (WITH POOLING)
 // ---------------------------------------------------------
+const activePools = {}; // Cache to store open pools
+
 async function getUserConnection(req) {
     const host = req.headers['x-db-host'];
     const user = req.headers['x-db-user'];
@@ -51,10 +60,26 @@ async function getUserConnection(req) {
         throw new Error('Missing database credentials in headers.');
     }
 
-    return await mysql.createConnection({
+    // 1. Create unique key for this connection
+    const poolKey = `${user}@${host}:${port}/${database}`;
+
+    // 2. Check cache (Reuse existing pool = Fast!)
+    if (activePools[poolKey]) {
+        return activePools[poolKey];
+    }
+
+    // 3. Create new POOL if doesn't exist
+    const pool = mysql.createPool({
         host, user, password, database, port,
-        ssl: { rejectUnauthorized: false } 
+        ssl: { rejectUnauthorized: false },
+        waitForConnections: true,
+        connectionLimit: 10,
+        queueLimit: 0
     });
+
+    // 4. Save to cache
+    activePools[poolKey] = pool;
+    return pool;
 }
 
 // ---------------------------------------------------------
@@ -68,22 +93,12 @@ app.post('/api/create-workspace', async (req, res) => {
     const dbName = `${safeName}`;    
     const userName = `${safeName}`; 
 
-    let masterConn;
     try {
-        // 2. Connect as ADMIN (Using env vars)
-        masterConn = await mysql.createConnection(MASTER_CONFIG);
-
-        // 3. Create Database
-        await masterConn.query(`CREATE DATABASE IF NOT EXISTS ${dbName}`);
-        
-        // 4. Create User
-        await masterConn.query(`CREATE USER IF NOT EXISTS '${userName}'@'%' IDENTIFIED BY '${newPassword}'`);
-        
-        // 5. GRANT PERMISSIONS
-        await masterConn.query(`GRANT ALL PRIVILEGES ON ${dbName}.* TO '${userName}'@'%'`);
-        
-        // 6. Apply Changes
-        await masterConn.query(`FLUSH PRIVILEGES`);
+        // 2. Use Master POOL (No creating/closing connections manually)
+        await masterPool.query(`CREATE DATABASE IF NOT EXISTS ${dbName}`);
+        await masterPool.query(`CREATE USER IF NOT EXISTS '${userName}'@'%' IDENTIFIED BY '${newPassword}'`);
+        await masterPool.query(`GRANT ALL PRIVILEGES ON ${dbName}.* TO '${userName}'@'%'`);
+        await masterPool.query(`FLUSH PRIVILEGES`);
 
         console.log(`✅ Created Workspace: DB=${dbName}, User=${userName}`);
 
@@ -102,21 +117,20 @@ app.post('/api/create-workspace', async (req, res) => {
     } catch (err) {
         console.error("Create Error:", err);
         res.status(500).json({ error: "Failed to create workspace. Name might be taken." });
-    } finally {
-        if (masterConn) masterConn.end();
-    }
+    } 
+    // 👇 REMOVED 'finally' block (Pools stay open)
 });
 
 // ---------------------------------------------------------
 // 🔍 ROUTE 2: GET SCHEMA (Verify Login)
 // ---------------------------------------------------------
 app.get('/api/schema', async (req, res) => {
-    let conn;
     try {
-        conn = await getUserConnection(req);
+        // Get Pool (Reused)
+        const pool = await getUserConnection(req);
         const dbName = req.headers['x-db-name'];
 
-        const [tables] = await conn.query(`SHOW TABLES`);
+        const [tables] = await pool.query(`SHOW TABLES`);
         if (!tables || tables.length === 0) return res.json({ tables: [] });
 
         const schema = { tables: [] };
@@ -124,7 +138,7 @@ app.get('/api/schema', async (req, res) => {
 
         for (const table of tables) {
             const tableName = table[tableNameKey];
-            const [columns] = await conn.query(`
+            const [columns] = await pool.query(`
                 SELECT column_name as name, data_type as type,
                        (CASE WHEN column_key = 'PRI' THEN 1 ELSE 0 END) as pk
                 FROM information_schema.columns 
@@ -136,9 +150,8 @@ app.get('/api/schema', async (req, res) => {
         res.json(schema);
     } catch (err) {
         res.status(500).json({ error: "Authentication Failed: " + err.message });
-    } finally {
-        if (conn) conn.end();
-    }
+    } 
+    // 👇 REMOVED 'finally' block
 });
 
 // ---------------------------------------------------------
@@ -146,10 +159,10 @@ app.get('/api/schema', async (req, res) => {
 // ---------------------------------------------------------
 app.post('/api/query', async (req, res) => {
     const { sql } = req.body;
-    let conn;
     try {
-        conn = await getUserConnection(req);
-        const [rows] = await conn.query(sql);
+        // Get Pool (Reused)
+        const pool = await getUserConnection(req);
+        const [rows] = await pool.query(sql);
         const isSelect = Array.isArray(rows);
         res.json({ 
             data: isSelect ? rows : [], 
@@ -157,9 +170,8 @@ app.post('/api/query', async (req, res) => {
         });
     } catch (err) {
         res.status(400).json({ error: err.message });
-    } finally {
-        if (conn) conn.end();
-    }
+    } 
+    // 👇 REMOVED 'finally' block
 });
 
 // ---------------------------------------------------------
